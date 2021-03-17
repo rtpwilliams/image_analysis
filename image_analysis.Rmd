@@ -1,0 +1,203 @@
+---
+title: "Image_Analysis"
+author: "Robert Williams"
+date: "3/17/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Install Packages
+Install the necessary packages. Do this once the first time analysis is performed.   Uncomment and execute the following code chunk.
+
+```{r}
+# install.packages("tidyverse")
+# install.packages("readxl")
+# install.packages("RVAideMemoire")
+# install.packages("dendextend")
+# install.packages("ggpubr")
+# install.packages("mratios")
+```
+
+
+## Load Package Libraries
+
+```{r echo=FALSE}
+library(tidyverse)
+library(readxl)
+library(RVAideMemoire)
+library(dendextend)
+library(ggpubr)
+library(mratios)
+```
+
+# Load in quantification data
+
+Each worm should have the following measurements:
+
+- One intestine fluorescence measurement
+- Four background measurements
+
+The input data should have the following columns (without quotes):
+
+ - "treatment": The type of RNAi treatment
+ - "life_stage": The worm developmental stage
+ - "worm": the worm number imaged
+ - "measurement_type": `background` or `GFP`
+ - "measurement_num": the measurement number from ImageJ
+ - "area": region of interest area
+ - "mean": mean gray pixel intensity
+ - "min": minimum pixel intensity
+ - "max": maximum pixel intensity
+ - "intDen": product of area and sum of the values of the pixels in the selection
+ - "rawIntDen": sum of the values of the pixels in the selection
+ - "experiment": experiment name including rep number
+ - "strain": strain or reporter gene name
+ 
+More info here: https://imagej.nih.gov/ij/docs/guide/146-30.html
+
+Below is code that will work for the data in the `example_data` directory. This section may need to be changed depending on how the input data is structured.
+
+```{r}
+sheets <- c("Rep1_ELT-2_RNAi",  "Rep1_L4440_RNAi", "Rep2_ELT-2_RNAi",  "Rep2_L4440_RNAi", "Rep3_ELT-2_RNAi",  "Rep3_L4440_RNAi")
+
+
+image_df_JM259 <- data.frame()
+for(sheet in sheets) {
+ toappend <- read_excel("./example_input/JM259_Reps123_elt-2_Promoter_ImageJ_Analysis.xlsx", sheet = sheet)
+ toappend <- toappend %>% mutate(experiment = sheet)
+ toappend$worm <- as.character(toappend$worm)
+ image_df_JM259 <- bind_rows(image_df_JM259, toappend)
+}
+image_df_JM259$strain <- "JM259"
+
+image_df_JM149 <- data.frame()
+for(sheet in sheets) {
+ toappend <- read_excel("./example_input/JM149_Reps123_elt-2_Promoter_ImageJ_Analysis.xlsx", sheet = sheet)
+ toappend <- toappend %>% mutate(experiment = sheet)
+ toappend$worm <- as.character(toappend$worm)
+ image_df_JM149 <- bind_rows(image_df_JM149, toappend)
+}
+
+image_df_JM149$strain <- "JM149"
+
+
+image_df<- image_df_JM149 %>% bind_rows(image_df_JM259)
+image_df <- image_df %>% filter(life_stage == "L1")
+head(image_df)
+colnames(image_df)
+```
+
+```{r}
+# Set the factor levels for ordering in downstream plotting
+image_df$treatment <- factor(image_df$treatment, levels = c("L4440", "ELT-2"))
+# Give each worm a unique ID
+image_df <- image_df %>%
+  mutate(ID = paste(strain, experiment, life_stage, worm, sep = "_"))
+```
+
+# Calculate corrected total cell fluorescence (CTCF)
+
+CTCF = Integrated Density – (Area of selected cell X Mean fluorescence of background readings)  
+More information here: https://theolb.readthedocs.io/en/latest/imaging/measuring-cell-fluorescence-using-imagej.html
+
+```{r}
+# Take the mean of the background measurements
+background_df<- image_df %>%
+  group_by(strain, treatment, worm, measurement_type, life_stage, experiment, ID) %>%
+  summarize(Mean_Background = mean(mean)) %>% 
+  filter(measurement_type == "background") %>%
+  ungroup() %>%
+  dplyr::select(ID, Mean_Background)
+background_df
+```
+```{r}
+# calculate CTCF for each worm
+image_ctcf <- image_df %>%
+  filter(measurement_type == "GFP") %>%
+  dplyr::select(strain, ID, treatment, worm, area, life_stage, experiment, intDen) %>%
+  inner_join(background_df, by = "ID") %>%
+  rowwise() %>%
+  mutate(CTCF = intDen - (area*Mean_Background) )
+image_ctcf
+```
+
+# Plot the quantification results
+
+```{r fig.width=5, fig.height=4}
+ggplot(image_ctcf, aes(treatment, CTCF/area)) + 
+  geom_boxplot(width = 0.5) +
+  geom_jitter(width = 0.25, alpha = 0.5, shape = 16) +
+  facet_grid(.~strain) +
+  labs(
+    title = "Overexpression of ELT-2\npromoter is ELT-7 dependent",
+    x = "RNAi Treatment",
+    y = "Corrected Total Cell \nFluorescence (A.U.)"
+  ) +
+  stat_compare_means(comparisons = list(c("L4440", "ELT-2")), method = "t.test") +
+  scale_x_discrete(labels = c("L4440", "ELT-2"))+
+  theme_classic() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 1),
+    axis.text.x = element_text(size = 15),
+    axis.text.y = element_text(size = 15),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size=18),
+    plot.title = element_text(hjust = 0.5, size = 18)
+    ) 
+
+# ggsave("./ELT-2_promoter_analysis_plot_210117.pdf", width = 5, height = 4, useDingbats=FALSE)  
+```
+
+# Measure fold change 
+To see how much brighter ELT-2 is compared to L4440
+
+```{r}
+mean_ctcf <-
+  image_ctcf %>%
+  group_by(strain, treatment) %>%
+  summarise(avgCTCF = mean(CTCF), sdCTCF = sd(CTCF))
+
+mean_ctcf <-
+  mean_ctcf %>% pivot_wider(names_from = treatment,
+                            values_from = c(avgCTCF, sdCTCF))
+mean_ctcf
+```
+# Calculate fold change and add confidence intervals
+
+```{r}
+
+image_ctcf %>%filter(life_stage=='L1' & treatment == 'ELT-2', strain == "JM149") %>% dplyr::select(CTCF) -> JM149_numerator
+image_ctcf %>% filter(life_stage=='L1' & treatment == 'L4440', strain == "JM149") %>% dplyr::select(CTCF) -> JM149_denominator
+ttestratio(JM149_numerator[[1]], JM149_denominator[[1]]) -> L1_ttest_ratio_JM149
+
+image_ctcf %>%filter(life_stage=='L1' & treatment == 'ELT-2', strain == "JM259") %>% dplyr::select(CTCF) -> JM259_numerator
+image_ctcf %>% filter(life_stage=='L1' & treatment == 'L4440', strain == "JM259") %>% dplyr::select(CTCF) -> JM259_denominator
+ttestratio(JM259_numerator[[1]], JM259_denominator[[1]]) -> L1_ttest_ratio_JM259
+    
+mean_ctcf$lower = c(L1_ttest_ratio_JM149$conf.int[1], L1_ttest_ratio_JM259$conf.int[1])
+mean_ctcf$upper = c(L1_ttest_ratio_JM149$conf.int[2], L1_ttest_ratio_JM259$conf.int[2])
+```
+
+# Plot fold change results
+```{r fig.width=3, fig.height=3}
+ggplot(mean_ctcf, aes(x = strain, y = `avgCTCF_ELT-2`/avgCTCF_L4440)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) +
+  labs(title = "elt-2 Promoter\nRelative Fluorescence") +
+  theme_classic()+
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 0.5),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size=20),
+    plot.title = element_text(hjust = 0.5, size = 20)
+    ) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  ylab("Relative Fluorescence") + coord_flip()
+
+# ggsave("./ELT-2_promoter_analysis_fold_change_210117.pdf", width = 3, height = 3, useDingbats=FALSE)  
+```
