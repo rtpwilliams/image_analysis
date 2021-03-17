@@ -15,8 +15,6 @@ Install the necessary packages. Do this once the first time analysis is performe
 ```{r}
 # install.packages("tidyverse")
 # install.packages("readxl")
-# install.packages("RVAideMemoire")
-# install.packages("dendextend")
 # install.packages("ggpubr")
 # install.packages("mratios")
 ```
@@ -27,8 +25,6 @@ Install the necessary packages. Do this once the first time analysis is performe
 ```{r echo=FALSE}
 library(tidyverse)
 library(readxl)
-library(RVAideMemoire)
-library(dendextend)
 library(ggpubr)
 library(mratios)
 ```
